@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Message, GameState } from './types';
-import { startNewGame, sendMessageToGemini, stopAudio } from './services/geminiService';
+import { startNewGameStream, sendMessageStream, stopAudio, playTTS, getAudioEndTime, getCurrentTime } from './services/geminiService';
 import ChatMessage from './components/ChatMessage';
 import InputArea from './components/InputArea';
 import Celebration from './components/Celebration';
@@ -11,7 +11,11 @@ const App: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [showCelebration, setShowCelebration] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Increments on every interruption to invalidate old stream processing loops in App.tsx
+  const streamSequenceId = useRef(0);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -19,7 +23,7 @@ const App: React.FC = () => {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages]);
+  }, [messages, isLoading]);
 
   // Timer to hide celebration
   useEffect(() => {
@@ -29,24 +33,135 @@ const App: React.FC = () => {
     }
   }, [showCelebration]);
 
+  const processStream = async (stream: AsyncGenerator<string>, messageId: string) => {
+    // 1. Reset state for new turn
+    streamSequenceId.current++; 
+    const mySeqId = streamSequenceId.current;
+    
+    let fullText = "";
+    let buffer = "";
+    let isFirstSentence = true;
+    let isCorrectFound = false;
+
+    // Track all TTS scheduling promises for this turn
+    const ttsPromises: Promise<void>[] = [];
+
+    try {
+      for await (const chunk of stream) {
+        if (mySeqId !== streamSequenceId.current) break;
+
+        fullText += chunk;
+
+        // UI Update Logic (stripping [CORRECT])
+        let displayText = fullText;
+        if (displayText.includes('[CORRECT]')) {
+            isCorrectFound = true;
+            displayText = displayText.replace('[CORRECT]', '').trimStart();
+        }
+        
+        setMessages((prev) => prev.map(m => 
+          m.id === messageId ? { ...m, text: displayText } : m
+        ));
+        setIsLoading(false);
+
+        // TTS Buffering Logic
+        buffer += chunk;
+        const delimiters = /([。！？!?.])/g;
+        let match;
+        let lastIndex = -1;
+        
+        // Find all sentence boundaries
+        while ((match = delimiters.exec(buffer)) !== null) {
+            lastIndex = match.index;
+        }
+
+        if (lastIndex !== -1) {
+            const sentence = buffer.substring(0, lastIndex + 1);
+            buffer = buffer.substring(lastIndex + 1);
+            
+            const ttsText = sentence.replace('[CORRECT]', '').trim();
+            if (ttsText) {
+                // Fire TTS request immediately. 
+                // The service handles the queueing of playback order.
+                const p = playTTS(
+                    ttsText, 
+                    () => { 
+                        if (mySeqId === streamSequenceId.current) setIsSpeaking(true); 
+                    }, 
+                    isFirstSentence // Only interrupt on the very first sentence of the turn
+                );
+                ttsPromises.push(p);
+                isFirstSentence = false;
+            }
+        }
+      }
+
+      // Flush remaining text in buffer
+      const remainder = buffer.replace('[CORRECT]', '').trim();
+      if (remainder && mySeqId === streamSequenceId.current) {
+          const p = playTTS(
+              remainder, 
+              () => { 
+                  if (mySeqId === streamSequenceId.current) setIsSpeaking(true); 
+              }, 
+              isFirstSentence
+          );
+          ttsPromises.push(p);
+      }
+
+      // Logic to turn OFF isSpeaking when audio finishes
+      // We wait for all TTS *scheduling* to complete (meaning we know the audio duration)
+      Promise.all(ttsPromises).then(() => {
+        if (mySeqId !== streamSequenceId.current) return;
+
+        const endTime = getAudioEndTime();
+        const currentTime = getCurrentTime();
+        const timeRemaining = Math.max(0, (endTime - currentTime) * 1000);
+        
+        // Add a small buffer to ensure we don't stop visual before audio ends
+        const delay = timeRemaining + 200;
+        
+        setTimeout(() => {
+          if (mySeqId === streamSequenceId.current) {
+            setIsSpeaking(false);
+          }
+        }, delay);
+      });
+
+    } catch (e) {
+      console.error("Stream processing error", e);
+    }
+    
+    return isCorrectFound;
+  };
+
   const handleStartGame = async () => {
     setGameState(GameState.PLAYING);
     setIsLoading(true);
-    setMessages([]); // Clear history
+    setMessages([]); 
     setShowCelebration(false);
+    setIsSpeaking(false);
+    
+    // Cancel any existing audio immediately
+    stopAudio();
+    streamSequenceId.current++;
 
     try {
-      const introText = await startNewGame();
-      const newMessage: Message = {
-        id: Date.now().toString(),
+      const msgId = Date.now().toString();
+      const initialMessage: Message = {
+        id: msgId,
         role: 'model',
-        text: introText, // Intro usually doesn't have [CORRECT]
+        text: '',
         timestamp: Date.now(),
       };
-      setMessages([newMessage]);
+      setMessages([initialMessage]);
+
+      const stream = startNewGameStream();
+      await processStream(stream, msgId);
+      
     } catch (error) {
       console.error(error);
-    } finally {
+      setMessages(prev => [...prev, { id: 'err', role: 'model', text: '哎呀，点点老师好像掉线了，请检查网络设置哦！', timestamp: Date.now() }]);
       setIsLoading(false);
     }
   };
@@ -54,7 +169,11 @@ const App: React.FC = () => {
   const handleSendMessage = async (text: string) => {
     if (!text.trim()) return;
 
-    // 1. Add user message
+    // Interruption
+    stopAudio();
+    setIsSpeaking(false);
+    streamSequenceId.current++;
+
     const userMsg: Message = {
       id: Date.now().toString(),
       role: 'user',
@@ -64,34 +183,24 @@ const App: React.FC = () => {
     setMessages((prev) => [...prev, userMsg]);
     setIsLoading(true);
 
-    // 2. Get AI response
-    try {
-      let responseText = await sendMessageToGemini(text);
-      
-      // Check for [CORRECT] marker
-      let isCorrect = false;
-      if (responseText.includes('[CORRECT]')) {
-        isCorrect = true;
-        responseText = responseText.replace('[CORRECT]', '').trim();
-      }
+    const aiMsgId = (Date.now() + 1).toString();
+    const aiMsg: Message = {
+      id: aiMsgId,
+      role: 'model',
+      text: "",
+      timestamp: Date.now(),
+    };
+    setMessages((prev) => [...prev, aiMsg]);
 
-      const aiMsg: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'model',
-        text: responseText,
-        timestamp: Date.now(),
-      };
-      setMessages((prev) => [...prev, aiMsg]);
+    try {
+      const stream = sendMessageStream(text);
+      const isCorrect = await processStream(stream, aiMsgId);
       
-      // Trigger celebration after adding message
-      if (isCorrect) {
+      if (isCorrect && !showCelebration) {
         setShowCelebration(true);
-        // Optional: Play a sound effect here if desired
       }
-      
     } catch (error) {
       console.error(error);
-    } finally {
       setIsLoading(false);
     }
   };
@@ -101,7 +210,7 @@ const App: React.FC = () => {
       {showCelebration && <Celebration />}
       
       {/* Header */}
-      <header className="bg-white/90 backdrop-blur-md border-b border-orange-100 py-4 px-4 sticky top-0 z-20 shadow-sm">
+      <header className="bg-white/90 backdrop-blur-md border-b border-orange-100 py-4 px-4 sticky top-0 z-30 shadow-sm flex-shrink-0">
         <div className="max-w-3xl mx-auto flex justify-between items-center">
           <div className="flex items-center gap-2">
             <span className="text-3xl">🕵️‍♀️</span>
@@ -113,7 +222,9 @@ const App: React.FC = () => {
             <button 
               onClick={() => {
                 stopAudio();
+                streamSequenceId.current++; 
                 setGameState(GameState.IDLE);
+                setIsSpeaking(false);
               }}
               className="text-sm bg-gray-100 hover:bg-gray-200 text-gray-500 px-3 py-1.5 rounded-full transition-colors font-bold"
             >
@@ -124,7 +235,7 @@ const App: React.FC = () => {
       </header>
 
       {/* Main Content */}
-      <main className="flex-1 overflow-y-auto scrollbar-hide p-4 pb-32 relative">
+      <main className="flex-1 overflow-y-auto scrollbar-hide p-4 relative">
         <div className="max-w-3xl mx-auto h-full">
           
           {gameState === GameState.IDLE && (
@@ -155,9 +266,10 @@ const App: React.FC = () => {
                   key={msg.id} 
                   message={msg} 
                   isLatest={index === messages.length - 1}
+                  isSpeaking={index === messages.length - 1 && isSpeaking}
                 />
               ))}
-              {isLoading && (
+              {isLoading && messages[messages.length - 1]?.text === "" && (
                 <div className="flex w-full mb-6 justify-start animate-pulse">
                    <div className="flex max-w-[70%] flex-row items-end gap-2">
                     <div className="w-10 h-10 md:w-12 md:h-12 rounded-full bg-orange-400 flex items-center justify-center text-2xl border-2 border-white">
@@ -175,10 +287,10 @@ const App: React.FC = () => {
         </div>
       </main>
 
-      {/* Input Area (Sticky Bottom) */}
+      {/* Input Area */}
       {gameState === GameState.PLAYING && (
-        <div className="fixed bottom-0 left-0 right-0 z-20">
-          <InputArea onSend={handleSendMessage} disabled={isLoading} />
+        <div className="w-full z-20 bg-[#FFFDF5] flex-shrink-0 pb-safe">
+          <InputArea onSend={handleSendMessage} disabled={isLoading && !isSpeaking} />
         </div>
       )}
     </div>
