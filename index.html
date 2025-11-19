@@ -39,6 +39,15 @@
         animation: speakingPulse 1.8s infinite ease-in-out;
         z-index: 10;
       }
+
+      /* Fade In Animation */
+      @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      .animate-fade-in {
+        animation: fadeIn 0.5s ease-out forwards;
+      }
     </style>
   <script type="importmap">
 {
@@ -53,5 +62,6 @@
 </head>
   <body class="bg-yellow-50 text-gray-800 antialiased h-screen overflow-hidden">
     <div id="root" class="h-full w-full"></div>
+    <script type="module" src="./index.tsx"></script>
   </body>
 </html>
