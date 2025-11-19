@@ -32,27 +32,27 @@ let audioQueue = Promise.resolve();
 
 export const initializeGemini = () => {
   if (!currentApiKey) {
-      console.warn("No API Key found");
-      return;
+    console.warn("No API Key found");
+    return;
   }
   ai = new GoogleGenAI({ apiKey: currentApiKey });
 };
 
 const getRandomWords = (count: number) => {
-    // Fisher-Yates shuffle
-    const array = [...VOCABULARY_POOL];
-    for (let i = array.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [array[i], array[j]] = [array[j], array[i]];
-    }
-    return array.slice(0, count);
+  // Fisher-Yates shuffle
+  const array = [...VOCABULARY_POOL];
+  for (let i = array.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [array[i], array[j]] = [array[j], array[i]];
+  }
+  return array.slice(0, count);
 };
 
 export const startNewGameStream = async function* (): AsyncGenerator<string> {
   if (!ai) initializeGemini();
   if (!ai) {
-      yield "请先设置 API Key 哦！(点击右上角齿轮图标)";
-      return;
+    yield "请先设置 API Key 哦！(点击右上角齿轮图标)";
+    return;
   }
 
   try {
@@ -69,8 +69,8 @@ export const startNewGameStream = async function* (): AsyncGenerator<string> {
 
     const result = await chatSession.sendMessageStream({ message: "开始游戏" });
     for await (const chunk of result) {
-        const text = chunk.text;
-        if (text) yield text;
+      const text = chunk.text;
+      if (text) yield text;
     }
   } catch (error) {
     console.error("Error starting game:", error);
@@ -80,12 +80,12 @@ export const startNewGameStream = async function* (): AsyncGenerator<string> {
 
 export const sendMessageStream = async function* (userMessage: string) {
   if (!chatSession) throw new Error("Game not started");
-  
+
   try {
     const result = await chatSession.sendMessageStream({ message: userMessage });
     for await (const chunk of result) {
-        const text = chunk.text;
-        if (text) yield text;
+      const text = chunk.text;
+      if (text) yield text;
     }
   } catch (error) {
     console.error("Error in stream:", error);
@@ -112,7 +112,7 @@ export const generateImage = async (prompt: string): Promise<string | null> => {
         aspectRatio: '1:1',
       },
     });
-    
+
     const base64ImageBytes = response.generatedImages?.[0]?.image?.imageBytes;
     if (base64ImageBytes) {
       return `data:image/jpeg;base64,${base64ImageBytes}`;
@@ -126,9 +126,22 @@ export const generateImage = async (prompt: string): Promise<string | null> => {
 
 // --- Audio / TTS Logic ---
 
+/**
+ * Critical for Mobile: Must be called directly inside a user interaction event handler.
+ * Initializes or Resumes the AudioContext to unlock audio playback.
+ */
+export const unlockAudioContext = async () => {
+  if (!audioContext) {
+    audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+  }
+  if (audioContext.state === 'suspended') {
+    await audioContext.resume();
+  }
+};
+
 export const stopAudio = () => {
   latestTTSId++; // Increment ID to invalidate any running stream loops
-  
+
   // Reset the queue so new tasks don't wait for cancelled ones
   audioQueue = Promise.resolve();
 
@@ -142,7 +155,7 @@ export const stopAudio = () => {
     }
   }
   activeSources.clear();
-  
+
   // Reset scheduling cursor
   if (audioContext) {
     nextStartTime = 0;
@@ -150,13 +163,13 @@ export const stopAudio = () => {
 };
 
 export const getAudioEndTime = (): number => {
-    if (!audioContext) return 0;
-    return nextStartTime;
+  if (!audioContext) return 0;
+  return nextStartTime;
 };
 
 export const getCurrentTime = (): number => {
-    if (!audioContext) return 0;
-    return audioContext.currentTime;
+  if (!audioContext) return 0;
+  return audioContext.currentTime;
 };
 
 function decode(base64: string) {
@@ -194,14 +207,14 @@ async function decodeAudioData(
  * 2. Queues the *scheduling* of that audio to ensure correct playback order.
  */
 export const playTTS = (
-  text: string, 
-  onStart?: () => void, 
+  text: string,
+  onStart?: () => void,
   shouldInterrupt: boolean = true
 ): Promise<void> => {
   if (shouldInterrupt) {
-    stopAudio(); 
+    stopAudio();
   }
-  
+
   const myId = latestTTSId;
 
   if (!ai) initializeGemini();
@@ -230,62 +243,64 @@ export const playTTS = (
     if (myId !== latestTTSId) return;
 
     try {
-        // Initialize AudioContext on demand (must be done inside user interaction flow usually)
-        if (!audioContext) {
-            audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+      // Double check context is available (should be unlocked by user interaction already)
+      if (!audioContext) {
+        audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+      }
+      if (audioContext.state === 'suspended') {
+        // Try to resume, though this might fail if not in user gesture stack. 
+        // Rely on unlockAudioContext being called upstream.
+        await audioContext.resume();
+      }
+
+      // If we interrupted, or if queue was empty, reset time.
+      // Note: audioContext.currentTime progresses constantly.
+      // If nextStartTime fell behind (gap in speech), reset it to now.
+      if (shouldInterrupt || nextStartTime < audioContext.currentTime) {
+        nextStartTime = audioContext.currentTime;
+      }
+
+      const responseStream = await responsePromise;
+      let isFirstChunk = true;
+
+      for await (const chunk of responseStream) {
+        if (myId !== latestTTSId) break;
+
+        const base64Audio = chunk.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+        if (base64Audio) {
+          const audioBytes = decode(base64Audio);
+          const audioBuffer = await decodeAudioData(audioBytes, audioContext);
+
+          if (myId !== latestTTSId) break;
+
+          const source = audioContext.createBufferSource();
+          source.buffer = audioBuffer;
+          source.connect(audioContext.destination);
+
+          const startTime = Math.max(nextStartTime, audioContext.currentTime);
+          source.start(startTime);
+
+          nextStartTime = startTime + audioBuffer.duration;
+          activeSources.add(source);
+
+          source.onended = () => {
+            activeSources.delete(source);
+          };
+
+          if (isFirstChunk) {
+            if (onStart) onStart();
+            isFirstChunk = false;
+          }
         }
-        if (audioContext.state === 'suspended') {
-            await audioContext.resume();
-        }
-
-        // If we interrupted, or if queue was empty, reset time.
-        // Note: audioContext.currentTime progresses constantly.
-        // If nextStartTime fell behind (gap in speech), reset it to now.
-        if (shouldInterrupt || nextStartTime < audioContext.currentTime) {
-            nextStartTime = audioContext.currentTime;
-        }
-
-        const responseStream = await responsePromise;
-        let isFirstChunk = true;
-
-        for await (const chunk of responseStream) {
-            if (myId !== latestTTSId) break;
-
-            const base64Audio = chunk.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-            if (base64Audio) {
-                const audioBytes = decode(base64Audio);
-                const audioBuffer = await decodeAudioData(audioBytes, audioContext);
-
-                if (myId !== latestTTSId) break;
-
-                const source = audioContext.createBufferSource();
-                source.buffer = audioBuffer;
-                source.connect(audioContext.destination);
-
-                const startTime = Math.max(nextStartTime, audioContext.currentTime);
-                source.start(startTime);
-                
-                nextStartTime = startTime + audioBuffer.duration;
-                activeSources.add(source);
-
-                source.onended = () => {
-                    activeSources.delete(source);
-                };
-
-                if (isFirstChunk) {
-                    if (onStart) onStart();
-                    isFirstChunk = false;
-                }
-            }
-        }
+      }
 
     } catch (error) {
-        console.error("TTS Streaming Error:", error);
+      console.error("TTS Streaming Error:", error);
     }
   });
 
   // Update the global queue reference so the next call waits for this one.
   audioQueue = processTask;
-  
+
   return processTask;
 };
