@@ -93,6 +93,37 @@ export const sendMessageStream = async function* (userMessage: string) {
   }
 };
 
+// --- Image Generation ---
+export const generateImage = async (prompt: string): Promise<string | null> => {
+  if (!ai) initializeGemini();
+  if (!ai) return null;
+
+  try {
+    // Remove emojis from prompt for better image generation results
+    const cleanPrompt = prompt.replace(/([\u2700-\u27BF]|[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD10-\uDDFF])/g, '').trim();
+    const finalPrompt = `A cute, simple, cartoon illustration of a ${cleanPrompt} for a toddler learning game. White background, bright colors.`;
+
+    const response = await ai.models.generateImages({
+      model: 'imagen-4.0-generate-001',
+      prompt: finalPrompt,
+      config: {
+        numberOfImages: 1,
+        outputMimeType: 'image/jpeg',
+        aspectRatio: '1:1',
+      },
+    });
+    
+    const base64ImageBytes = response.generatedImages?.[0]?.image?.imageBytes;
+    if (base64ImageBytes) {
+      return `data:image/jpeg;base64,${base64ImageBytes}`;
+    }
+    return null;
+  } catch (error) {
+    console.error("Image generation error:", error);
+    return null;
+  }
+};
+
 // --- Audio / TTS Logic ---
 
 export const stopAudio = () => {

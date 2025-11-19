@@ -1,3 +1,4 @@
+
 import React from 'react';
 import { Message } from '../types';
 
@@ -24,12 +25,23 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message, isLatest, isSpeaking
 
         {/* Bubble */}
         <div
-          className={`relative px-5 py-3 md:px-6 md:py-4 text-lg md:text-xl rounded-2xl shadow-sm leading-relaxed transition-all duration-300 border
+          className={`relative px-5 py-3 md:px-6 md:py-4 text-lg md:text-xl rounded-2xl shadow-sm leading-relaxed transition-all duration-300 border overflow-hidden
           ${isUser 
             ? 'bg-blue-500 text-white rounded-br-none border-blue-500' 
             : `bg-white text-gray-800 rounded-bl-none ${showSpeakingVisuals ? 'speaking-active' : 'border-orange-100'}`
           }`}
         >
+          {/* Generated Image Attachment (Placed Above Text) */}
+          {message.imageUrl && (
+            <div className="mb-3 rounded-xl overflow-hidden border-2 border-orange-100 shadow-sm">
+              <img 
+                src={message.imageUrl} 
+                alt="Hint" 
+                className="w-full h-auto object-cover bg-gray-50 animate-fade-in" 
+              />
+            </div>
+          )}
+
           {message.text}
         </div>
       </div>

@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Message, GameState } from './types';
-import { startNewGameStream, sendMessageStream, stopAudio, playTTS, getAudioEndTime, getCurrentTime, setApiKey, getApiKey, hasApiKey } from './services/geminiService';
+import { startNewGameStream, sendMessageStream, stopAudio, playTTS, getAudioEndTime, getCurrentTime, setApiKey, getApiKey, hasApiKey, generateImage } from './services/geminiService';
 import ChatMessage from './components/ChatMessage';
 import InputArea from './components/InputArea';
 import Celebration from './components/Celebration';
@@ -51,6 +51,7 @@ const App: React.FC = () => {
     let buffer = "";
     let isFirstSentence = true;
     let isCorrectFound = false;
+    let imageTriggered = false;
 
     // Track all TTS scheduling promises for this turn
     const ttsPromises: Promise<void>[] = [];
@@ -61,8 +62,31 @@ const App: React.FC = () => {
 
         fullText += chunk;
 
-        // UI Update Logic (stripping [CORRECT])
+        // UI Update Logic (stripping [CORRECT] and [IMAGE:...])
         let displayText = fullText;
+        
+        // Handle [IMAGE: ...] tag
+        const imageRegex = /\[IMAGE:\s*(.*?)\]/;
+        const imageMatch = displayText.match(imageRegex);
+        
+        if (imageMatch) {
+            // Only trigger image generation once per message if tag is found
+            if (!imageTriggered) {
+                imageTriggered = true;
+                const wordToGen = imageMatch[1];
+                // Run generation in background
+                generateImage(wordToGen).then(url => {
+                    if (url && mySeqId === streamSequenceId.current) {
+                        setMessages(prev => prev.map(m => 
+                            m.id === messageId ? { ...m, imageUrl: url } : m
+                        ));
+                    }
+                });
+            }
+            // Remove the tag from display
+            displayText = displayText.replace(imageRegex, '');
+        }
+
         if (displayText.includes('[CORRECT]')) {
             isCorrectFound = true;
             displayText = displayText.replace('[CORRECT]', '').trimStart();
@@ -88,7 +112,8 @@ const App: React.FC = () => {
             const sentence = buffer.substring(0, lastIndex + 1);
             buffer = buffer.substring(lastIndex + 1);
             
-            const ttsText = sentence.replace('[CORRECT]', '').trim();
+            // Clean text for TTS (remove tags)
+            const ttsText = sentence.replace('[CORRECT]', '').replace(/\[IMAGE:.*?\]/, '').trim();
             if (ttsText) {
                 // Fire TTS request immediately. 
                 // The service handles the queueing of playback order.
@@ -106,7 +131,7 @@ const App: React.FC = () => {
       }
 
       // Flush remaining text in buffer
-      const remainder = buffer.replace('[CORRECT]', '').trim();
+      const remainder = buffer.replace('[CORRECT]', '').replace(/\[IMAGE:.*?\]/, '').trim();
       if (remainder && mySeqId === streamSequenceId.current) {
           const p = playTTS(
               remainder, 
