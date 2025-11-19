@@ -1,13 +1,16 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import { Message, GameState } from './types';
-import { startNewGame, sendMessageToGemini } from './services/geminiService';
+import { startNewGame, sendMessageToGemini, stopAudio } from './services/geminiService';
 import ChatMessage from './components/ChatMessage';
 import InputArea from './components/InputArea';
+import Celebration from './components/Celebration';
 
 const App: React.FC = () => {
   const [gameState, setGameState] = useState<GameState>(GameState.IDLE);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [showCelebration, setShowCelebration] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -18,17 +21,26 @@ const App: React.FC = () => {
     scrollToBottom();
   }, [messages]);
 
+  // Timer to hide celebration
+  useEffect(() => {
+    if (showCelebration) {
+      const timer = setTimeout(() => setShowCelebration(false), 4500);
+      return () => clearTimeout(timer);
+    }
+  }, [showCelebration]);
+
   const handleStartGame = async () => {
     setGameState(GameState.PLAYING);
     setIsLoading(true);
     setMessages([]); // Clear history
+    setShowCelebration(false);
 
     try {
       const introText = await startNewGame();
       const newMessage: Message = {
         id: Date.now().toString(),
         role: 'model',
-        text: introText,
+        text: introText, // Intro usually doesn't have [CORRECT]
         timestamp: Date.now(),
       };
       setMessages([newMessage]);
@@ -54,7 +66,15 @@ const App: React.FC = () => {
 
     // 2. Get AI response
     try {
-      const responseText = await sendMessageToGemini(text);
+      let responseText = await sendMessageToGemini(text);
+      
+      // Check for [CORRECT] marker
+      let isCorrect = false;
+      if (responseText.includes('[CORRECT]')) {
+        isCorrect = true;
+        responseText = responseText.replace('[CORRECT]', '').trim();
+      }
+
       const aiMsg: Message = {
         id: (Date.now() + 1).toString(),
         role: 'model',
@@ -62,6 +82,13 @@ const App: React.FC = () => {
         timestamp: Date.now(),
       };
       setMessages((prev) => [...prev, aiMsg]);
+      
+      // Trigger celebration after adding message
+      if (isCorrect) {
+        setShowCelebration(true);
+        // Optional: Play a sound effect here if desired
+      }
+      
     } catch (error) {
       console.error(error);
     } finally {
@@ -71,6 +98,8 @@ const App: React.FC = () => {
 
   return (
     <div className="flex flex-col h-full bg-[#FFFDF5]">
+      {showCelebration && <Celebration />}
+      
       {/* Header */}
       <header className="bg-white/90 backdrop-blur-md border-b border-orange-100 py-4 px-4 sticky top-0 z-20 shadow-sm">
         <div className="max-w-3xl mx-auto flex justify-between items-center">
@@ -83,7 +112,7 @@ const App: React.FC = () => {
           {gameState === GameState.PLAYING && (
             <button 
               onClick={() => {
-                window.speechSynthesis.cancel();
+                stopAudio();
                 setGameState(GameState.IDLE);
               }}
               className="text-sm bg-gray-100 hover:bg-gray-200 text-gray-500 px-3 py-1.5 rounded-full transition-colors font-bold"

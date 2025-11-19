@@ -1,5 +1,6 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Message } from '../types';
+import { playTTS, stopAudio } from '../services/geminiService';
 
 interface ChatMessageProps {
   message: Message;
@@ -8,27 +9,29 @@ interface ChatMessageProps {
 
 const ChatMessage: React.FC<ChatMessageProps> = ({ message, isLatest }) => {
   const isUser = message.role === 'user';
+  const [isSpeaking, setIsSpeaking] = useState(false);
   
   // Auto-speak for Diandian teacher's messages if it's the latest one
   useEffect(() => {
-    if (!isUser && isLatest && 'speechSynthesis' in window) {
-      // Cancel previous speech to avoid overlap
-      window.speechSynthesis.cancel();
-      
-      const utterance = new SpeechSynthesisUtterance(message.text);
-      utterance.lang = 'zh-CN';
-      utterance.rate = 0.9; // Slightly slower for kids
-      utterance.pitch = 1.2; // Slightly higher pitch for "teacher" persona
-      
-      // Find a Chinese voice if possible
-      const voices = window.speechSynthesis.getVoices();
-      const zhVoice = voices.find(v => v.lang.includes('zh'));
-      if (zhVoice) {
-        utterance.voice = zhVoice;
-      }
+    let isActive = true;
 
-      window.speechSynthesis.speak(utterance);
+    if (!isUser && isLatest) {
+      playTTS(
+        message.text,
+        () => {
+          if (isActive) setIsSpeaking(true);
+        },
+        () => {
+          if (isActive) setIsSpeaking(false);
+        }
+      );
+    } else {
+      setIsSpeaking(false);
     }
+
+    return () => {
+      isActive = false;
+    };
   }, [isUser, isLatest, message.text]);
 
   return (
@@ -43,13 +46,21 @@ const ChatMessage: React.FC<ChatMessageProps> = ({ message, isLatest }) => {
 
         {/* Bubble */}
         <div
-          className={`relative px-5 py-3 md:px-6 md:py-4 text-lg md:text-xl rounded-2xl shadow-sm leading-relaxed
+          className={`relative px-5 py-3 md:px-6 md:py-4 text-lg md:text-xl rounded-2xl shadow-sm leading-relaxed transition-all duration-300
           ${isUser 
             ? 'bg-blue-500 text-white rounded-br-none' 
-            : 'bg-white text-gray-800 rounded-bl-none border border-orange-100'
+            : `bg-white text-gray-800 rounded-bl-none border border-orange-100 ${isSpeaking ? 'ring-4 ring-orange-200 border-orange-300 shadow-lg scale-[1.02]' : ''}`
           }`}
         >
           {message.text}
+          
+          {/* Speaking Indicator */}
+          {!isUser && isSpeaking && (
+            <div className="absolute -right-1 -top-1 w-3 h-3">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-orange-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-orange-500"></span>
+            </div>
+          )}
         </div>
       </div>
     </div>

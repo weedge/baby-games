@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { stopAudio } from '../services/geminiService';
 
 interface InputAreaProps {
   onSend: (text: string) => void;
@@ -41,6 +42,7 @@ const InputArea: React.FC<InputAreaProps> = ({ onSend, disabled }) => {
 
   const handleSend = () => {
     if (inputText.trim()) {
+      stopAudio(); // Stop teacher speaking when user sends text
       onSend(inputText);
       setInputText('');
     }
@@ -58,6 +60,7 @@ const InputArea: React.FC<InputAreaProps> = ({ onSend, disabled }) => {
       recognition.stop();
       setIsListening(false);
     } else {
+      stopAudio(); // Stop teacher speaking when user starts microphone
       recognition.start();
       setIsListening(true);
     }
