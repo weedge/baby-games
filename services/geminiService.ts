@@ -5,6 +5,20 @@ import { VOCABULARY_POOL, generateSystemInstruction } from '../constants';
 let chatSession: Chat | null = null;
 let ai: GoogleGenAI | null = null;
 
+// API Key Management
+const STORAGE_KEY = 'gemini_api_key_v1';
+let currentApiKey = localStorage.getItem(STORAGE_KEY) || process.env.API_KEY || '';
+
+export const setApiKey = (key: string) => {
+  currentApiKey = key;
+  localStorage.setItem(STORAGE_KEY, key);
+  ai = null; // Force re-initialization
+};
+
+export const getApiKey = () => currentApiKey;
+
+export const hasApiKey = () => !!currentApiKey && currentApiKey.length > 0;
+
 // Audio Context & State
 let audioContext: AudioContext | null = null;
 // Track all active sources to stop them all at once
@@ -17,7 +31,11 @@ let latestTTSId = 0;
 let audioQueue = Promise.resolve();
 
 export const initializeGemini = () => {
-  ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  if (!currentApiKey) {
+      console.warn("No API Key found");
+      return;
+  }
+  ai = new GoogleGenAI({ apiKey: currentApiKey });
 };
 
 const getRandomWords = (count: number) => {
@@ -32,7 +50,10 @@ const getRandomWords = (count: number) => {
 
 export const startNewGameStream = async function* (): AsyncGenerator<string> {
   if (!ai) initializeGemini();
-  if (!ai) throw new Error("AI not initialized");
+  if (!ai) {
+      yield "请先设置 API Key 哦！(点击右上角齿轮图标)";
+      return;
+  }
 
   try {
     const selectedWords = getRandomWords(5);
@@ -53,7 +74,7 @@ export const startNewGameStream = async function* (): AsyncGenerator<string> {
     }
   } catch (error) {
     console.error("Error starting game:", error);
-    yield "哎呀，点点老师好像掉线了，请检查网络设置哦！(API Error)";
+    yield "哎呀，点点老师好像掉线了，请检查网络设置或 API Key 哦！";
   }
 };
 
